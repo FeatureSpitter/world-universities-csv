@@ -1,67 +1,74 @@
-var jsdom = require("jsdom")
-  , async = require("async")
-  , csv = require("csv")
-  , countries  = require('country-data').countries;
+const { JSDOM } = require("jsdom");
+const axios = require("axios");
+const { parse } = require("node-html-parser");
+const { countries } = require('country-data');
+const { createWriteStream } = require('fs');
+const { stringify } = require('csv-stringify');
+const async = require("async");
 
-var count = 0;
+const output = createWriteStream("world-universities.csv");
+const stringifier = stringify();
+stringifier.pipe(output);
 
 var lastPage;
 
-function readPage(page, write, cb) {
-  jsdom.env(page, ["http://code.jquery.com/jquery.js"], function (err, window) {
-    count = 0;
-    var firstItem = window.$('ol li a')[0];
+async function readPage(pageUrl, write) {
+  try {
+    const response = await axios.get(pageUrl);
+    const dom = new JSDOM(response.data);
+    const window = dom.window;
+    const $ = require('jquery')(window);
+
+    let count = 0;
+    const firstItem = $('ol li a')[0];
     if (firstItem) {
-      var currentPage = firstItem.innerHTML;
-      if (currentPage == lastPage)
-        return cb();
+      const currentPage = firstItem.innerHTML;
+      if (currentPage === lastPage) {
+        return 0;
+      }
 
       lastPage = currentPage;
     }
 
-    window.$('ol li a').each(function (i, el) {
-      write(el.innerHTML, window.$(el).attr('href'));
+    $('ol li a').each(function (i, el) {
+      write($(el).text(), $(el).attr('href'));
       ++count;
     });
-    cb();
-  });
+
+    return count;
+  } catch (error) {
+    console.error('Error reading page:', error);
+    return 0;
+  }
 }
 
-var output = csv().to("world-universities.csv");
-
-function loadList(dom, country, cb) {
-  var total = 0;
-  var start = 1;
-  process.stdout.write("["+country+"] ");
-  async.doUntil(function(cb) {
-    var page = "http://univ.cc/search.php?dom=" + dom + "&key=&start=" + start;
-    readPage(page, function (name, url) {
-      output.write([country, name, url]);
-    }, cb);
-
-  }, function() {
+async function loadList(dom, country) {
+  let total = 0;
+  let start = 1;
+  process.stdout.write("[" + country + "] ");
+  let count;
+  do {
+    const pageUrl = `http://univ.cc/search.php?dom=${dom}&key=&start=${start}`;
+    count = await readPage(pageUrl, (name, url) => {
+      stringifier.write([country, name, url]);
+    });
     start += 50;
     total += count;
     process.stdout.write('.');
-    return count < 50;
+  } while (count >= 50);
 
-  }, function () {
-    process.stdout.write(total + '\n');
-    cb();
-  });
+  process.stdout.write(total + '\n');
 }
 
-var countriesCodes = Object.keys(countries);
+const countriesCodes = Object.keys(countries.all).filter(code => countries.all[code].alpha2.length === 2);
 
-async.eachSeries(countriesCodes, function(country, cb) {
-  if (country.length != 2)
-    return cb();
+async.eachSeries(countriesCodes, async (countryCode) => {
+  const country = countries.all[countryCode];
+  if (country.alpha2.length !== 2) return;
 
-  var dom = country == "US" ? "edu" : country;
-  loadList(dom.toLowerCase(), country, cb);
-}, function() {
-  output.end();
+  const dom = country.alpha2 === "US" ? "edu" : country.alpha2.toLowerCase();
+  await loadList(dom, country.alpha2);
+}, () => {
+  stringifier.end();
 });
-
-
 
